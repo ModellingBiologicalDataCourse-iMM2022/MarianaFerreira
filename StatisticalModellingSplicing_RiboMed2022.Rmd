@@ -1,0 +1,1291 @@
+---
+title: "StatisticalModellingSplicing_RiboMed2022"
+output:
+  pdf_document: default
+  html_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+*Required data*
+
+Pre-processed files can be found at: https://drive.google.com/drive/folders/17BhG4uMVVb8FC-m5an2zAzNUyfc2yKm0?usp=sharing
+These were obtained by running psichomics'* functions to download and load GTEx data into R.
+
+We are using version 7 of GTEx and focusing on Brain and Muscle samples only.
+
+If you want to directly download and load the files using psichomics, check code chunks #5-7.
+
+---
+psichomics
+---
+BioConductor: https://bioconductor.org/packages/release/bioc/html/psichomics.html
+GitHub: https://github.com/nuno-agostinho/psichomics
+
+------------------------------------------------------------------------------------------
+
+1) **GTEx_BrainMuscle_psis**:
+PSI table for exon skipping (cassette exon) alternative splicing events.
+Each row is an event (39045); each column is a sample (2234)
+
+------------------------------------------------------------------------------------------
+
+2) **GTEx_BrainMuscle**:
+List of list** of tables including:
+a. sample metadata (information about the collected samples from GTEX version 7 Muscle and Brain samples)
+b. clinical data (information about sample donors)
+c. splice junction quantification table (Count data for annotated splice junctions)
+ 
+** the list GTEx_BrainMuscle contains a sublist "GTEx_V7" that includes the 3 tables.
+
+------------------------------------------------------------------------------------------
+
+3) **annot**
+Splicing annotation table for exon skipping (cassette exon) alternative splicing events.
+ 
+** the list GTEx_BrainMuscle contains a sublist "GTEx_V7" that includes the 3 tables.
+
+------------------------------------------------------------------------------------------
+
+```{r Data loading}
+
+# Folder where pre-processed R files are stored locally
+dataFolder <- "/Users/MarianaFerreira/Dropbox/iMM/Resources/"
+
+# Load pre-processed files
+GTEx_BrainMuscle_psis <- readRDS(file = paste0(dataFolder, "GTEx_BrainMuscle_psis.rds"))
+GTEx_BrainMuscle      <- readRDS(file = paste0(dataFolder, "GTEx_BrainMuscle.rds"))
+annot                 <- readRDS(file = paste0(dataFolder, "annot.rds"))
+
+# Inspect the structure of relevant objects
+head(GTEx_BrainMuscle$GTEx_V7$`Sample metadata`) #Data about collected samples from GTEX version 7 Muscle and Brain samples
+head(GTEx_BrainMuscle$GTEx_V7$`Clinical data`) # Data about sample donors
+head(GTEx_BrainMuscle$GTEx_V7$`Junction quantification`) # Count data for annotated splice junctions
+
+```
+
+*Libraries*
+
+```{r Libraries}
+
+library(psichomics)
+library(cowplot)
+library(ggplot2)
+library(reshape2)
+library(ggpubr)
+library(RColorBrewer)
+
+```
+
+*Variables*
+
+Please find pre-processed files at: https://drive.google.com/drive/folders/17BhG4uMVVb8FC-m5an2zAzNUyfc2yKm0?usp=sharing
+- GTEx_BrainMuscle_psis
+- GTEx_BrainMuscle
+- annot
+
+```{r Variables}
+
+# Set predefinied colors
+brain_color   <- "#1E90FF"
+muscle_color  <- "#DC143C"
+green         <- "#3CB371"
+brain_pal     <- c(brewer.pal(n = 12, name = "Set3"), "white")
+beta_pal      <- brewer.pal(n = 5, name = "Set1")
+
+colLow  <- "#4169E1"
+colHigh <- "#EF767A"
+
+```
+
+*Functions*
+
+```{r Functions}
+
+findJunctionReads <- function (junctionQuant, annotation, minReads = 0){
+  eventType = "SE"
+  if (is.null(annotation$Gene)) 
+    geneCol <- NULL
+  else geneCol <- "Gene"
+  coords <- rownames(junctionQuant)
+  showStrand <- any(grepl("\\+|\\-", coords))
+  annotation <- psichomics:::uniqueBy(annotation, "Chromosome", "Strand", 
+                         "Constitutive exon 1 end", "Alternative exon 1 start", 
+                         "Alternative exon 1 end", "Constitutive exon 2 start", 
+                         geneCol)
+  chr <- annotation$Chromosome
+  strand <- annotation$Strand
+  incAstr <- psichomics:::junctionString(chr, strand, annotation$`Constitutive exon 1 end`, 
+                            annotation$`Alternative exon 1 start`, showStrand)
+  incBstr <- psichomics:::junctionString(chr, strand, annotation$`Alternative exon 1 end`, 
+                            annotation$`Constitutive exon 2 start`, showStrand)
+  excAstr <- psichomics:::junctionString(chr, strand, annotation$`Constitutive exon 1 end`, 
+                            annotation$`Constitutive exon 2 start`, showStrand)
+  incA <- fastmatch::fmatch(incAstr, coords)
+  incB <- fastmatch::fmatch(incBstr, coords)
+  excA <- fastmatch::fmatch(excAstr, coords)
+  excB <- 0
+  nas <- is.na(incA) | is.na(incB) | is.na(excA)
+  incA <- incA[!nas]
+  incB <- incB[!nas]
+  excA <- excA[!nas]
+  if (length(incA) == 0) 
+    return(NULL)
+  multigene <- lapply(annotation$Gene, length) > 1
+  gene <- annotation$Gene
+  gene[multigene] <- lapply(gene[multigene], paste, collapse = "/")
+  eventNames <- paste(sep = "_", eventType, chr, strand, 
+                      annotation$`Constitutive exon 1 end`, annotation$`Alternative exon 1 start`, 
+                      annotation$`Alternative exon 1 end`, annotation$`Constitutive exon 2 start`, 
+                      gene)
+  df <- cbind(incA, incB, excA)
+  rownames(df) <- eventNames[!nas]
+  return(df)
+}
+
+```
+
+Learn about available *tissues* and *data types* for GTEx' splicing-related data
+
+```{r [Do not run] Available tissues and datatypes}
+
+# getGtexTissues()
+# getGtexDataTypes()
+
+```
+
+Load GTEx data for *Muscle* and *Brain* (v7)
+
+```{r [Do not run] Load GTEx data for Muscle and Brain (v7)}
+
+# GTEx_BrainMuscle <- loadGtexData(data = c("sampleInfo", "subjectInfo", "junctionQuant"),
+#                                  tissue = c("Brain", "Muscle"),
+#                                  release = 7)
+
+```
+
+Load alternative splicing annotation (SE: skipped exon) and quantify PSIs
+
+```{r [Do not run] Load alternative SE splicing annotation}
+
+# psichomics::listSplicingAnnotations(species = "Human", assembly = "hg19", date = "2017")
+# annot <- psichomics::loadAnnotation(annotation = listSplicingAnnotations(species = "Human", assembly = "hg19", date = "2017"))
+
+# GTEx_BrainMuscle_psis <- quantifySplicing(annotation = annot,
+#                                           junctionQuant = GTEx_BrainMuscle$GTEx$`Junction quantification`,
+#                                           eventType = c("SE"),
+#                                           minReads = 0)
+
+```
+
+Process GTEx PSIs
+- remove events with at least one NA (keep ~30% of the SE table)
+
+```{r Process GTEx PSIs}
+
+# Identify rows (events) that have at least one NA
+rowsAnyNA <- apply(GTEx_BrainMuscle_psis, 1, anyNA)
+
+# Filter PSI table to keep only rows (events) with no NAs
+psis <- GTEx_BrainMuscle_psis[!rowsAnyNA,]
+cat(paste0("Fraction of events with no NAs: ", round(nrow(psis)/nrow(GTEx_BrainMuscle_psis), digits = 3)))
+
+# match is required because Sample metadata contains more samples than those in PSI table
+tissues       <- GTEx_BrainMuscle$GTEx_V7$`Sample metadata`$`Tissue Type (area of retrieval)`[match(colnames(psis),
+                                                                                                    rownames(GTEx_BrainMuscle$GTEx_V7$`Sample metadata`))]
+subtissues    <- GTEx_BrainMuscle$GTEx_V7$`Sample metadata`$`Tissue Type (detail)`[match(colnames(psis),
+                                                                                         rownames(GTEx_BrainMuscle$GTEx_V7$`Sample metadata`))]
+
+# Define the columns in PSI table that correspond to muscle and brain samples
+muscle_cols   <- which(tissues == "Muscle")
+brain_cols    <- which(tissues == "Brain")
+
+```
+
+**Ex1.** Check distribution of tissue areas for *Brain* samples
+
+```{r Ex1. Distribution of brain sample sites}
+
+subtissues_table  <- as.data.frame(table(subtissues))
+brain_sub_table   <- subtissues_table[grep("Brain", subtissues_table$subtissues),]
+
+ggplot(brain_sub_table,
+       aes(x = subtissues,
+           y = Freq,
+           fill = subtissues)) +
+  geom_col(show.legend = FALSE,
+           color = "black") +
+  # geom_text(aes(x = subtissues,
+  #               y = Freq + 10),
+  #           label = brain_sub_table$Freq,
+  #           size = 5) +
+  scale_fill_manual(values = brain_pal) +
+  coord_flip() +
+  xlab("Brain areas") +
+  ylab("# samples") +
+  theme(text = element_text(size = 20))
+
+```
+
+**Ex2.** Inspect distribution of PSI values for *Brain* and *Muscle*
+
+```{r Ex2. Inspect distribution of PSI values}
+
+# ggplot
+
+psistoPlot <- melt(psis, value.name = "psi")
+psistoPlot$tissue <- GTEx_BrainMuscle$GTEx_V7$`Sample metadata`$`Tissue Type (area of retrieval)`[match(psistoPlot$variable,
+                                                                                                        rownames(GTEx_BrainMuscle$GTEx_V7$`Sample metadata`))]
+
+head(psistoPlot)
+
+ggplot(data = psistoPlot,
+       aes(x = psi,
+           fill = tissue)) +
+  geom_density(show.legend = FALSE,
+               color = "black") +
+  scale_fill_manual(values = c(brain_color, muscle_color)) +
+  xlab("PSI") +
+  facet_wrap(. ~ tissue) +
+  theme(text = element_text(size = 20))
+
+# base R
+
+plot(density(as.matrix(psis[,brain_cols])), col = brain_color)
+plot(density(as.matrix(psis[,muscle_cols])), col = muscle_color)
+
+```
+**Ex3.** Inspect the behaviour of PSI values across samples
+
+- Are all events worth looking at?
+- If not, how do we select the most relevant?
+
+3.1. Calculate metrics that summarise information about PSIs across samples
+
+NOTE: Using apply returns a vector or array or list of values obtained by applying a given function over rows of psi table
+
+```{r Ex3.1. Inspect behaviour of PSI values across samples}
+
+# Calculate variance, median and mean for the PSI of each event across all samples
+overallVariance       <- apply(psis, 1, var)
+overallMedian         <- apply(psis, 1, median)
+overallMean           <- apply(psis, 1, mean)
+maxPsi                <- apply(psis, 1, max)
+minPsi                <- apply(psis, 1, min)
+
+# Calculate variance, median and mean for the PSI of each event across brain samples
+brainMedian           <- apply(psis[,brain_cols], 1, median)
+brainMean             <- apply(psis[,brain_cols], 1, mean)
+brainVariance         <- apply(psis[,brain_cols], 1, var)
+
+# Calculate variance, median and mean for the PSI of each event across muscle samples
+muscleMedian          <- apply(psis[,muscle_cols], 1, median)
+muscleMean            <- apply(psis[,muscle_cols], 1, mean)
+muscleVariance        <- apply(psis[,muscle_cols], 1, var)
+
+# Calculate PSI range and difference of median PSIs of each event across all samples
+deltaPSI              <- brainMedian - muscleMedian
+psiRange              <- maxPsi - minPsi
+
+# Join metrics into a single summary table
+GTEx_AllSE_BrainMuscle <- as.data.frame(cbind(overallVariance, overallMedian, overallMean,
+                                              brainMedian, brainMean, brainVariance,
+                                              muscleMedian, muscleMean, muscleVariance,
+                                              deltaPSI, psiRange))
+
+```
+
+**Ex3.** Inspect the behaviour of PSI values across samples
+
+- Are all events worth looking at?
+- If not, how do we select the most relevant?
+
+3.2. Plot and make justified decisions
+
+```{r Ex3.2. Inspect behaviour of PSI values across samples (plot)}
+
+# Plot log10 variance of the PSI across all samples as a function of the difference in PSI median (brain - muscle)
+ggplot(GTEx_AllSE_BrainMuscle,
+       aes(x = abs(deltaPSI),
+           y = log10(overallVariance),
+           color = deltaPSI)) +
+  geom_point() +
+  xlab(expression(abs(Delta*PSI[Brain-Muscle]))) +
+  scale_color_gradient2(name = expression(Delta*PSI),
+                        low = muscle_color,
+                        mid = "gray",
+                        high = brain_color) +
+  ylab("log10 PSI overall variance") +
+  labs(caption = paste0(nrow(psis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+# Plot PSI range across all samples as a function of the mean PSI across all samples
+ggplot(GTEx_AllSE_BrainMuscle,
+       aes(x = overallMean,
+           y = psiRange,
+           color = overallMedian)) +
+  geom_point() +
+  xlab("PSI mean") +
+  ylab("PSI range") +
+  scale_color_gradient(name = "median PSI",
+                        low = "gray",
+                        high = "#59C3A6") +
+  geom_vline(xintercept = c(0.05,0.95), linetype = 2) +
+  labs(caption = paste0(nrow(psis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+# Plot the distribution of PSI range
+ggplot(GTEx_AllSE_BrainMuscle,
+       aes(x = psiRange)) +
+  geom_histogram(color = "black",
+                 fill = "#4169E1") +
+  xlab("PSI range") +
+  labs(caption = paste0(nrow(psis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+# Plot the distribution of PSI mean
+ggplot(GTEx_AllSE_BrainMuscle,
+       aes(x = overallMean)) +
+  geom_histogram(color = "black",
+                 fill = "#59C3A6") +
+  xlab("PSI mean") +
+  labs(caption = paste0(nrow(psis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+plot(x = abs(GTEx_AllSE_BrainMuscle$deltaPSI), y = log10(GTEx_AllSE_BrainMuscle$overallVariance))
+plot(x = abs(GTEx_AllSE_BrainMuscle$overallMean), y = GTEx_AllSE_BrainMuscle$psiRange)
+hist(GTEx_AllSE_BrainMuscle$psiRange)
+hist(GTEx_AllSE_BrainMuscle$overallMean)
+
+```
+
+**Ex4.** Filter to keep the most relevant ("alternative") events and check the resulting PSI distribution.
+
+```{r Ex4. Filter to keep most relevant (alternative) events and plot}
+
+# Filter our summary table (GTEx_AllSE_BrainMuscle) and psi table to include only the most variable events: 0.05 < PSI mean < 0.95 
+AllSE_BrainMuscle_Filtered  <- GTEx_AllSE_BrainMuscle[which(GTEx_AllSE_BrainMuscle$overallMean > 0.05 & GTEx_AllSE_BrainMuscle$overallMean < 0.95),]
+filteredPsis                <- psis[match(rownames(AllSE_BrainMuscle_Filtered), rownames(psis)),]
+
+psistoPlot <- melt(filteredPsis, value.name = "psi")
+psistoPlot$tissue <- GTEx_BrainMuscle$GTEx_V7$`Sample metadata`$`Tissue Type (area of retrieval)`[match(psistoPlot$variable,                                                                              rownames(GTEx_BrainMuscle$GTEx_V7$`Sample metadata`))]
+
+head(psistoPlot)
+
+ggplot(data = psistoPlot,
+       aes(x = psi,
+           fill = tissue)) +
+  geom_density(show.legend = FALSE,
+               color = "black") +
+  scale_fill_manual(values = c(brain_color, muscle_color)) +
+  xlab("PSI") +
+  facet_wrap(. ~ tissue) +
+  theme(text = element_text(size = 20))
+
+
+head(psistoPlot)
+
+ggplot(data = psistoPlot,
+       aes(x = psi,
+           fill = tissue)) +
+  geom_density(show.legend = FALSE,
+               color = "black") +
+  scale_fill_manual(values = c(brain_color, muscle_color)) +
+  xlab("PSI") +
+  facet_wrap(. ~ tissue) +
+  theme(text = element_text(size = 20))
+
+# base R
+
+# plot(density(as.matrix(filteredPsis[,brain_cols])), col = brain_color)
+# plot(density(as.matrix(filteredPsis[,muscle_cols])), col = muscle_color)
+
+```
+
+[Optional] Logit-transform PSIs
+
+```{r [Optional] Logit-transform PSIs}
+
+psistoPlot$logit <- car::logit(psistoPlot$psi)
+
+ggplot(data = psistoPlot,
+       aes(x = logit,
+           fill = tissue)) +
+  geom_density(color = "black",
+               show.legend = FALSE) +
+  scale_fill_manual(values = c(brain_color, muscle_color)) +
+  xlab("logit(PSI)") +
+  facet_wrap(. ~ tissue) +
+  theme(text = element_text(size = 20))
+
+# R base
+
+plot(density(as.matrix(car::logit(filteredPsis[,brain_cols]))), col = brain_color)
+plot(density(as.matrix(car::logit(filteredPsis[,muscle_cols]))), col = muscle_color)
+
+```
+
+Extract read count (inclusion and exclusion) data for considered events
+
+NOTE: depends on tailor-made function *findJunctionReads* that finds inclusion and exclusion junctions (from GTEx Junction Quantification object) required for an event's PSI quantification; returns a table with 3 columns: inclusion reads A, inclusion reads B (both extremes of the exon) and exclusion reads where each entry is the position of that junction in the GTEx junction quantification table
+
+```{r Extract read count data}
+
+# Get read counts for each event
+readPositions <- findJunctionReads(annotation = annot$`Skipped exon`,
+                                   junctionQuant = GTEx_BrainMuscle$GTEx_V7$`Junction quantification`,
+                                   minReads = 0)
+
+head(readPositions)
+
+# Subset readPositions table into the same events that we have in filtered PSI table
+readsFromPsis <- as.data.frame(readPositions[match(rownames(filteredPsis), rownames(readPositions)),])
+
+# Use positions in junction quantification table to get the actual read counts for each junction
+incA  <- GTEx_BrainMuscle$GTEx_V7$`Junction quantification`[readsFromPsis$incA,]
+incB  <- GTEx_BrainMuscle$GTEx_V7$`Junction quantification`[readsFromPsis$incB,]
+exc   <- GTEx_BrainMuscle$GTEx_V7$`Junction quantification`[readsFromPsis$excA,]
+
+# Summarise incA and incB into the mean of both
+inc   <- (incA + incB)/2
+
+# Make sure columns/samples in inc and exc tables are the same as in psi table
+inc   <- inc[, match(colnames(filteredPsis), colnames(inc))]
+exc   <- exc[, match(colnames(filteredPsis), colnames(exc))]
+
+cov   <- inc + exc
+
+```
+
+Sum-up information about events under consideration
+- Calculate metrics that summarise information about PSIs across samples, including for coverage
+
+```{r Inspect behaviour of PSI and coverage values across samples}
+
+psiTable <- filteredPsis
+covTable <- cov
+
+# Calculate variance, median and mean for the PSI of each event across all samples
+overallVariance       <- apply(psiTable, 1, var)
+overallMedian         <- apply(psiTable, 1, median)
+overallMean           <- apply(psiTable, 1, mean)
+maxPsi                <- apply(psiTable, 1, max)
+minPsi                <- apply(psiTable, 1, min)
+
+# Calculate median, mean and variance for the PSI of each event for brain samples
+brainMedian           <- apply(psiTable[,brain_cols], 1, median)
+brainMean             <- apply(psiTable[,brain_cols], 1, mean)
+brainVariance         <- apply(psiTable[,brain_cols], 1, var)
+
+# Calculate median, mean and variance for the PSI of each event for muscle samples
+muscleMedian          <- apply(psiTable[,muscle_cols], 1, median)
+muscleMean            <- apply(psiTable[,muscle_cols], 1, mean)
+muscleVariance        <- apply(psiTable[,muscle_cols], 1, var)
+
+# Calculate PSI range and difference of median PSIs of each event across all samples
+deltaPSI              <- brainMedian - muscleMedian
+psiRange              <- maxPsi - minPsi
+
+# Calculate mean coverage of each event across all samples, brain samples and muscle samples
+meanCoverageBrain     <- apply(covTable[,brain_cols], 1, mean)
+meanCoverageMuscle    <- apply(covTable[,muscle_cols], 1, mean)
+meanCoverageOverall   <- apply(covTable, 1, mean)
+
+medianCoverageBrain   <- apply(covTable[,brain_cols], 1, median)
+medianCoverageMuscle  <- apply(covTable[,muscle_cols], 1, median)
+medianCoverageOverall <- apply(covTable, 1, median)
+
+GTEx_FilteredSE_BrainMuscle <- as.data.frame(cbind(overallVariance, overallMedian, overallMean,
+                                                   brainMedian, brainMean, brainVariance, medianCoverageBrain, meanCoverageBrain,
+                                                   muscleMedian, muscleMean, muscleVariance, medianCoverageMuscle, meanCoverageMuscle,
+                                                   medianCoverageOverall, meanCoverageOverall, deltaPSI, psiRange))
+
+GTEx_FilteredSE_BrainMuscle$EventID <- rownames(GTEx_FilteredSE_BrainMuscle)
+
+```
+
+**Ex5.** Select *some* events of interest (OI). Can you predict their PSI distributions?
+
+```{r Ex5. Select some events of interest}
+
+# List of some events randomly selected
+eventsOI <- c("SE_1_+_168014465_168020130_168020171_168032859_DCAF6",
+              "SE_16_+_2257346_2258211_2258335_2258451_MLST8",
+              "SE_2_-_127819691_127818216_127818172_127816731_BIN1",
+              "SE_17_-_1257505_1251302_1251256_1248793_YWHAE",
+              "SE_1_+_11718421_11718590_11718685_11718793_FBXO44",
+              "SE_1_-_37967405_37962337_37962308_37961519_MEAF6",
+              "SE_19_+_10913034_10914315_10914344_10916592_DNM2",
+              "SE_1_-_154142876_154141859_154141781_154130197_TPM3")
+
+# Include these events in previous PSI range as a function of mean PSI plot
+ggplot(GTEx_FilteredSE_BrainMuscle,
+       aes(x = overallMean,
+           y = psiRange,
+           color = overallMedian)) +
+  geom_point() +
+  geom_point(data = GTEx_FilteredSE_BrainMuscle[eventsOI,],
+             color = "black",
+             fill = NA,
+             stroke = 1,
+             shape = 21,
+             size = 3) +
+  xlab("PSI mean") +
+  ylab("PSI range") +
+  scale_color_gradient(name = "median PSI",
+                       low = "gray",
+                       high = "#59C3A6") +
+  labs(caption = paste0(nrow(filteredPsis), " exon skipping (SE) events"))  +
+  theme(text = element_text(size = 20))
+
+```
+
+Check overall PSI distribution for selected events
+
+```{r Check overall PSI distribution for selected events}
+
+# function to generate point and violin plot for a particular row/event in the table
+# use includeKruskal = TRUE to include Kruskal-Wallis to compare the distributions of PSI values in both tissues
+# use includeBoxplot = TRUE to include a boxplot on top of the points
+plotEventPsis <- function(eventID, includeKruskal, includeBoxplot){
+
+  eventrow <- which(rownames(filteredPsis) == eventID)
+  
+  psistoPlot <- melt(filteredPsis[eventrow,])
+  
+  psistoPlot$tissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (area of retrieval)`[match(psistoPlot$variable,
+                                                                                                       rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+  psistoPlot$subtissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (detail)`[match(psistoPlot$variable,
+                                                                                               rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+  
+  plot <- ggplot(data = psistoPlot,
+         aes(x = tissue,
+             y = value,
+             group = tissue,
+             color = tissue,
+             fill = tissue)) +
+    geom_violin(show.legend = FALSE,
+                alpha = 0.5) +
+    geom_jitter(alpha = 0.2,
+                show.legend = FALSE) +
+    scale_fill_manual(values = c(brain_color, muscle_color)) +
+    scale_color_manual(values = c(brain_color, muscle_color)) +
+    scale_y_continuous(breaks = seq(0, 1, 0.25), limits = c(0,1)) +
+    xlab("tissue") +
+    ylab("PSI") +
+    labs(title = eventID) +
+    theme(plot.title = element_text(size = 8), axis.title.x = element_blank())  +
+    theme(text = element_text(size = 20))
+  
+  if(includeKruskal == TRUE){
+    
+    plot <- plot +
+    stat_compare_means(method = "kruskal.test",
+                       label.y = 1,
+                       show.legend = FALSE)
+    
+  }else{}
+  
+  if(includeBoxplot == TRUE){
+    
+    plot <- plot +
+    geom_boxplot(fill = NA,
+                 outlier.shape = NA,
+                 color = "black",
+                 width = 0.25)
+    
+  }
+
+  return(plot)
+  
+}
+
+p1 <- plotEventPsis(eventsOI[1], includeKruskal = TRUE, includeBoxplot = TRUE)
+p2 <- plotEventPsis(eventsOI[2], includeKruskal = TRUE, includeBoxplot = TRUE)
+p3 <- plotEventPsis(eventsOI[3], includeKruskal = TRUE, includeBoxplot = TRUE)
+p4 <- plotEventPsis(eventsOI[4], includeKruskal = TRUE, includeBoxplot = TRUE)
+p5 <- plotEventPsis(eventsOI[5], includeKruskal = TRUE, includeBoxplot = TRUE)
+p6 <- plotEventPsis(eventsOI[6], includeKruskal = TRUE, includeBoxplot = TRUE)
+p7 <- plotEventPsis(eventsOI[7], includeKruskal = TRUE, includeBoxplot = TRUE)
+p8 <- plotEventPsis(eventsOI[8], includeKruskal = TRUE, includeBoxplot = TRUE)
+
+plot_grid(p1, p2, p3, p4,
+          p5, p6, p7, p8,
+          nrow = 2, ncol = 4)
+
+```
+
+**Ex6.** What if we sample N (10) samples? And 3 samples?
+
+```{r Ex6. What if we sample from these samples?}
+
+overallN <- 10
+
+# function to generate point and violin plot for a particular row/event in the table plus a set (of size overallN) of selected sampled samples within each tissue and the Kruskal-Wallis test for the comparison of those sampled samples
+# use includeKruskal = TRUE to include Kruskal-Wallis test to compare the distributions of sampled PSI values in both tissues
+plotEventPsisAndSample <- function(eventID, sampleN, includeKruskal){
+
+  eventrow <- which(rownames(filteredPsis) == eventID)
+  
+  psistoPlot <- melt(filteredPsis[eventrow,])
+  
+  psistoPlot$tissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (area of retrieval)`[match(psistoPlot$variable,
+                                                                                                       rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+  psistoPlot$subtissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (detail)`[match(psistoPlot$variable,
+                                                                                               rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+  
+  sample <- psistoPlot[c(sample(x = which(psistoPlot$tissue == "Brain"), size = sampleN),
+                         sample(x = which(psistoPlot$tissue == "Muscle"), size = sampleN)),]
+  
+  plot <- ggplot(data = psistoPlot,
+         aes(x = tissue,
+             y = value,
+             group = tissue,
+             color = tissue,
+             fill = tissue)) +
+    geom_violin(show.legend = FALSE,
+                alpha = 0.5) +
+    geom_jitter(alpha = 0.2,
+                show.legend = FALSE) +
+    geom_jitter(data = sample,
+                color = "black",
+                fill = "black",
+                show.legend = FALSE) +
+    scale_fill_manual(values = c(brain_color, muscle_color)) +
+    scale_color_manual(values = c(brain_color, muscle_color)) +
+    xlab("tissue") +
+    ylab("PSI") +
+    labs(title = eventID) +
+    theme(plot.title = element_text(size = 8), axis.title.x = element_blank())
+  
+    if(includeKruskal == TRUE){
+    
+    plot <- plot +
+      stat_compare_means(data = sample,
+                       method = "kruskal.test",
+                       label.y = 1,
+                       show.legend = FALSE)
+    }else{}
+    
+  return(plot)
+  
+}
+
+p1 <- plotEventPsisAndSample(eventsOI[1], sampleN = overallN, includeKruskal = TRUE)
+p2 <- plotEventPsisAndSample(eventsOI[2], sampleN = overallN, includeKruskal = TRUE)
+p3 <- plotEventPsisAndSample(eventsOI[3], sampleN = overallN, includeKruskal = TRUE)
+p4 <- plotEventPsisAndSample(eventsOI[4], sampleN = overallN, includeKruskal = TRUE)
+p5 <- plotEventPsisAndSample(eventsOI[5], sampleN = overallN, includeKruskal = TRUE)
+p6 <- plotEventPsisAndSample(eventsOI[6], sampleN = overallN, includeKruskal = TRUE)
+p7 <- plotEventPsisAndSample(eventsOI[7], sampleN = overallN, includeKruskal = TRUE)
+p8 <- plotEventPsisAndSample(eventsOI[8], sampleN = overallN, includeKruskal = TRUE)
+
+plot_grid(p1, p2, p3, p4,
+          p5, p6, p7, p8,
+          nrow = 2, ncol = 4)
+```
+
+**Ex7.** Inspect distribution of coverage (inc+exc) values for *Brain* and *Muscle*
+
+```{r Ex7. Inspect distribution of coverage values}
+
+# Plot distribution of coverage for brain samples
+covBrainPlot <- ggplot(GTEx_FilteredSE_BrainMuscle) +
+  geom_histogram(aes(x = log10(medianCoverageBrain)),
+                 fill = brain_color,
+                 color = "black",
+                 alpha = 0.8,
+                 bins = 12) +
+  geom_vline(xintercept = 2,
+             linetype = 3,
+             size = 1) +
+  xlab("log10 median inc+exc") +
+  labs(caption = paste0(nrow(filteredPsis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+# Plot distribution of coverage for muscle samples
+covMusclePlot <- ggplot(GTEx_FilteredSE_BrainMuscle) +
+  geom_histogram(aes(x = log10(medianCoverageMuscle)),
+                 fill = muscle_color,
+                 color = "black",
+                 alpha = 0.8,
+                 bins = 12) +
+  geom_vline(xintercept = 2,
+             linetype = 3,
+             size = 1) +
+  xlab("log10 median inc+exc") +
+  labs(caption = paste0(nrow(filteredPsis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+plot_grid(covBrainPlot, covMusclePlot)
+
+# R base
+
+# hist(log10(GTEx_FilteredSE_BrainMuscle$medianCoverageBrain), breaks = 30, col = brain_color)
+# hist(log10(GTEx_FilteredSE_BrainMuscle$medianCoverageMuscle), breaks = 30, col = muscle_color)
+  
+```
+
+**Ex8.** Simulate PSI-associated confidence intervals from a proportion's test.
+
+```{r Ex8. Simulate PSI-associated confidence intervals from a proportions test}
+
+# Perform proportion's tests for the two cases (8 in 10 vs. 800 in 1000)
+confLow   <- prop.test(x = 8, n = 10, p = 0.8)
+confHigh  <- prop.test(x = 800, n = 1000, p = 0.8)
+
+confIntPlot <- ggplot() +
+  geom_point(aes(x = "Low",
+                 y = 0.8),
+             color = colLow,
+             size = 5) +
+  geom_errorbar(aes(x = "Low",
+                    ymin = confLow$conf.int[1],
+                    ymax = confLow$conf.int[2]),
+                width = 0.15,
+                size = 1,
+                color = colLow) +
+  geom_point(aes(x = "High",
+                 y = 0.8),
+             color = colHigh,
+             size = 5) +
+  geom_errorbar(aes(x = "High",
+                    ymin = confHigh$conf.int[1],
+                    ymax = confHigh$conf.int[2]),
+                width = 0.15,
+                size = 1,
+                color = colHigh) +
+  scale_x_discrete(breaks = NULL) +
+  xlab("") +
+  ylab("Proportion") +
+  scale_y_continuous(breaks = seq(from = 0, to = 1, by = 0.25), limits = c(0,1)) +
+  coord_flip()  +
+  theme(text = element_text(size = 20))
+
+confIntPlot
+
+```
+
+**Ex9.** Explore R stats beta distribution functions
+
+```{r Ex9. Explore R stats beta distribution functions}
+
+# Random point generation
+points1 <- rbeta(1000, shape1 = 10, shape2 = 20)
+points2 <- rbeta(1000, shape1 = 5, shape2 = 1)
+points3 <- rbeta(1000, shape1 = 1, shape2 = 3)
+points4 <- rbeta(1000, shape1 = 2, shape2 = 2)
+points5 <- rbeta(1000, shape1 = 2, shape2 = 5)
+
+# Density function generation
+dens1 <- dbeta(seq(0,1,length.out = 1000), shape1 = 10, shape2 = 20)
+dens2 <- dbeta(seq(0,1,length.out = 1000), shape1 = 5, shape2 = 1)
+dens3 <- dbeta(seq(0,1,length.out = 1000), shape1 = 1, shape2 = 3)
+dens4 <- dbeta(seq(0,1,length.out = 1000), shape1 = 2, shape2 = 2)
+dens5 <- dbeta(seq(0,1,length.out = 1000), shape1 = 2, shape2 = 5)
+
+df <- as.data.frame(cbind(c(points1, points2, points3, points4, points5),
+                          c(dens1, dens2, dens3, dens4, dens5),
+                          c(rep("a = 10, b = 20", times = 1000),
+                            rep("a = 5, b = 1", times = 1000),
+                            rep("a = 1, b = 3", times = 1000),
+                            rep("a = 2, b = 2", times = 1000),
+                            rep("a = 2, b = 5", times = 1000))))
+colnames(df) <- c("Points", "dBeta", "Type")
+
+pointPlot <- ggplot(df,
+       aes(x = Type,
+           y = as.numeric(as.vector(Points)),
+           colour = as.factor(Type))) +
+  geom_jitter(size = 1,
+             alpha = 0.7,
+             show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1",
+                     limits = levels(factor(df$Type))) +
+  scale_y_continuous(breaks = seq(from = 0, to = 1, by = 0.25), limits = c(0,1)) +
+  # scale_x_continuous(breaks = NULL) +
+  coord_flip() +
+  xlab("") +
+  ylab("") +
+  labs(title = "Point generation") +
+  theme(text = element_text(size = 20))
+
+densityPlot <- ggplot(df,
+                      aes(x = rep(seq(0, 1, length.out = 1000), times = 5),
+                          y = as.numeric(as.vector(df$dBeta)),
+                          colour = factor(Type))) +
+  geom_line(size=1,
+            show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1",
+                     limits = levels(factor(df$Type))) +
+  scale_x_continuous(breaks = seq(from = 0, to = 1, by = 0.25), limits = c(0,1)) +
+  # scale_y_continuous(breaks = seq(from = 0, to = 2.5, by = 0.5), limits = c(0,2.5)) +
+  xlab("") +
+  ylab("") +
+  labs(title = "Density function") +
+  theme(text = element_text(size = 20))
+
+plot_grid(pointPlot, densityPlot, nrow = 1, ncol = 2, rel_width = c(5, 1))
+
+```
+
+**Ex10.** Simulate beta distributions with different coverage levels
+
+```{r Ex10. Simulate beta distributions with different coverage levels}
+
+pointsLow   <- rbeta(1000, shape1 = 8, shape2 = 2)
+pointsHigh  <- rbeta(1000, shape1 = 800, shape2 = 200)
+dbetaLow    <- dbeta(seq(0,1,length.out = 1000), shape1 = 8, shape2 = 2)
+dbetaHigh   <- dbeta(seq(0,1,length.out = 1000), shape1 = 800, shape2 = 200)
+
+df <- as.data.frame(cbind(c(pointsLow, pointsHigh),
+                          c(dbetaLow, dbetaHigh),
+                          c(rep("Low", times = 1000), rep("High", times = 1000))))
+colnames(df) <- c("Points", "dBeta", "Type")
+
+pointPlot <- ggplot(df,
+       aes(x = 1:2000,
+           y = as.numeric(as.vector(Points)),
+           colour = Type)) +
+  geom_point(size = 1,
+             alpha = 0.7,
+             show.legend = FALSE) +
+  scale_color_manual(values = c(colHigh, colLow)) +
+  scale_y_continuous(breaks = seq(from = 0, to = 1, by = 0.25), limits = c(0,1)) +
+  scale_x_continuous(breaks = NULL) +
+  coord_flip() +
+  xlab("") +
+  ylab("") +
+  theme(text = element_text(size = 20))
+
+densityPlot <- ggplot(df,
+       aes(x = rep(seq(0, 1, length.out = 1000), times = 2),
+           y = as.numeric(as.vector(dBeta)),
+           colour = Type)) +
+  geom_line(size=1,
+            show.legend = FALSE) +
+  scale_color_manual(values = c(colHigh, colLow)) +
+  scale_x_continuous(breaks = seq(from = 0, to = 1, by = 0.25), limits = c(0,1)) +
+  scale_y_continuous(breaks = NULL) +
+  xlab("") +
+  ylab("") +
+  theme(text = element_text(size = 20))
+
+plot_grid(confIntPlot, pointPlot, densityPlot, nrow = 3, rel_heights = c(1,3,3))
+
+```
+
+Use beta-distribution approach to model inclusion levels for these events
+
+```{r Use beta-distribution approach to model inclusion levels from sampled replicates}
+
+N <- 3
+names1 <- paste0("Brain", 1:N)
+names2 <- paste0("Muscle", 1:N)
+
+# Column in reference table
+i <- which(rownames(filteredPsis) == eventsOI[2])
+
+# :::::::::::
+# Get original PSIs and median PSIs
+# :::::::::::
+
+psisBrain  <- as.numeric(as.vector(filteredPsis[i,brain_cols]))
+psisMuscle <- as.numeric(as.vector(filteredPsis[i,muscle_cols]))
+
+psiRefBrain  <- GTEx_FilteredSE_BrainMuscle$brainMedian[i]
+psiRefMuscle <- GTEx_FilteredSE_BrainMuscle$muscleMedian[i]
+
+
+originalpsi <- ggplot() +
+  geom_density(aes(x = psisBrain),
+               color = NA,
+               alpha = 0.5,
+               fill = brain_color) +
+  geom_rug(aes(x = psisBrain),
+           alpha = 0.5,
+           color = brain_color) +
+  geom_vline(xintercept = psiRefBrain,
+             color = brain_color,
+             size = 1) +
+  geom_density(aes(x = psisMuscle),
+               color = NA,
+               alpha = 0.5,
+               fill = muscle_color) +
+  geom_rug(aes(x = psisMuscle),
+           alpha = 0.5,
+           color = muscle_color) +
+  geom_vline(xintercept = psiRefMuscle,
+             color = muscle_color,
+             size = 1) +
+  xlab("PSI") +
+  scale_x_continuous(limits = c(0,1),
+                     breaks = seq(0,1,0.25)) +
+  theme(axis.title = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12)) +
+  labs(title = "Original PSIs")
+
+
+# :::::::::::
+# Get original coverage and mean overall coverage
+# :::::::::::
+
+covsBrain  <- as.numeric(as.vector(cov[i,brain_cols]))
+covsMuscle <- as.numeric(as.vector(cov[i,muscle_cols]))
+
+covRefBrain <- GTEx_FilteredSE_BrainMuscle$medianCoverageBrain[i]
+covRefMuscle <- GTEx_FilteredSE_BrainMuscle$medianCoverageMuscle[i]
+
+originalcov <- ggplot() +
+  geom_histogram(aes(x = covsBrain),
+                 alpha = 0.5,
+                 fill = brain_color,
+                 color = NA,
+                 bins = 100) +
+  geom_rug(aes(x = covsBrain),
+           alpha = 0.5,
+           color = brain_color) +
+  geom_vline(xintercept = covRefBrain,
+             color = brain_color,
+             size = 1) +
+  geom_histogram(aes(x = covsMuscle),
+                 alpha = 0.5,
+                 fill = muscle_color,
+                 color = NA,
+                 bins = 100) +
+  geom_rug(aes(x = covsMuscle),
+           alpha = 0.5,
+           color = muscle_color) +
+  geom_vline(xintercept = covRefMuscle,
+             color = muscle_color,
+             size = 1) +
+  scale_x_log10(limits = c(1,10000),
+                breaks = c(1,10,100,1000)) +
+  xlab("inc+exc") +
+  theme(axis.title = element_text(size = 14),
+        axis.text.y = element_text(size = 14),
+        axis.text.x = element_text(size = 12)) +
+  labs(title = "Original coverage")
+
+  # Sample N samples (use for both PSI and coverage)
+  
+  allPsis <- filteredPsis[i,]
+  allCovs <- cov[i,]
+
+  psisToSampleFrom <- melt(allPsis)
+  psisToSampleFrom$tissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (area of retrieval)`[match(psisToSampleFrom$variable,
+                                                                                                       rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+  psisToSampleFrom$subtissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (detail)`[match(psisToSampleFrom$variable,
+                                                                                               rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+  
+  brain_samples   <- psisToSampleFrom$variable[sample(x = which(psisToSampleFrom$tissue == "Brain"), size = N)]
+  muscle_samples  <- psisToSampleFrom$variable[sample(x = which(psisToSampleFrom$tissue == "Muscle"), size = N)]
+  
+  brain_covs      <- as.numeric(as.vector(cov[i,which(colnames(cov) %in% brain_samples)]))
+  brain_inc       <- as.numeric(as.vector(inc[i,which(colnames(inc) %in% brain_samples)]))
+  brain_exc       <- as.numeric(as.vector(exc[i,which(colnames(exc) %in% brain_samples)]))
+  
+  muscle_covs     <- as.numeric(as.vector(cov[i,which(colnames(cov) %in% muscle_samples)]))
+  muscle_inc      <- as.numeric(as.vector(inc[i,which(colnames(inc) %in% muscle_samples)]))
+  muscle_exc      <- as.numeric(as.vector(exc[i,which(colnames(exc) %in% muscle_samples)]))
+  
+  artif1 <- c()
+  artif2 <- c()
+  
+  artif_sample1 <- c()
+  artif_sample2 <- c()
+  
+  for(j in 1:N){
+    
+    artif_sample1   <- c(artif_sample1, rep(names1[j], times = 500))
+    artif_sample2   <- c(artif_sample2, rep(names2[j], times = 500))
+    
+    artif1          <- c(artif1,
+                         rbeta(500, shape1 = brain_inc[j], shape2 = brain_exc[j]))
+    
+    artif2          <- c(artif2,
+                         rbeta(500, shape1 = muscle_inc[j], shape2 = muscle_exc[j]))
+
+  }
+  
+  median1 <- median(artif1)
+  median2 <- median(artif2)
+  
+  names(artif1) <- artif_sample1
+  names(artif2) <- artif_sample2
+  
+  p2 <- ggplot() +
+    geom_density(aes(x = as.numeric(as.vector(artif1)),
+                     group = names(artif1)),
+                 alpha = 0.3,
+                 color = brain_color,
+                 fill = brain_color) +
+    geom_density(aes(x = as.numeric(as.vector(artif2)),
+                     group = names(artif2)),
+                 alpha = 0.3,
+                 color = muscle_color,
+                 fill = muscle_color) +
+    xlab("PSI") +
+    scale_x_continuous(limits = c(0,1),
+                       breaks = seq(0,1,0.25)) +
+    geom_vline(xintercept = median1,
+               color = brain_color,
+               size = 1) +
+    geom_vline(xintercept = median2,
+               color = muscle_color,
+               size = 1) +
+    theme(legend.position = c(0.8,0.8),
+          legend.text = element_text(size = 20),
+          legend.key = element_blank(),
+          legend.background = element_blank(),
+          axis.title = element_text(size = 14),
+          axis.text.y = element_text(size = 14),
+          axis.text.x = element_text(size = 12)) +
+    labs(title = "Beta dist. PSI")
+    
+  multiplot <- plot_grid(originalpsi, originalcov, p2, nrow = 3, align = "v", rel_heights = c(1,1,3))
+  multiplot
+
+```
+
+Use beta-distribution approach to model inclusion levels for these events (function mode)
+
+```{r Use beta-distribution approach for all samples}
+
+# Select fixed N replicates
+nreps <- 5
+brain_nrep_cols   <- sample(x = which(tissues == "Brain"), size = nreps)
+brain_samples     <- colnames(filteredPsis)[brain_nrep_cols]
+
+muscle_nrep_cols  <- sample(x = which(tissues == "Muscle"), size = nreps)
+muscle_samples    <- colnames(filteredPsis)[muscle_nrep_cols]
+
+# ::::::::::::::::
+# Function that generates beta distribution-based object for alternative splicing analyses
+gtexNrepsBetas    <- function(row){
+  
+  nrepBetas <- list()
+
+brain_covs  <- as.numeric(as.vector(cov[row, brain_samples]))
+brain_inc   <- as.numeric(as.vector(inc[row, brain_samples]))
+brain_exc   <- as.numeric(as.vector(exc[row, brain_samples]))
+
+muscle_covs <- as.numeric(as.vector(cov[row, muscle_samples]))
+muscle_inc  <- as.numeric(as.vector(inc[row, muscle_samples]))
+muscle_exc  <- as.numeric(as.vector(exc[row, muscle_samples]))
+
+artif_brain <- c()
+artif_muscle <- c()
+
+artif_sample_brain  <- c()
+artif_sample_muscle <- c()
+
+for(j in 1:nreps){
+  
+  artif_sample_brain  <- c(artif_sample_brain, rep(brain_samples[j], times = 500))
+  artif_sample_muscle <- c(artif_sample_muscle, rep(muscle_samples[j], times = 500))
+  
+  artif_brain         <- c(artif_brain,
+                           rbeta(500, shape1 = brain_inc[j], shape2 = brain_exc[j]))
+  
+  artif_muscle        <- c(artif_muscle,
+                           rbeta(500, shape1 = muscle_inc[j], shape2 = muscle_exc[j]))
+  
+}
+
+median1 <- median(artif_brain)
+median2 <- median(artif_muscle)
+
+names(artif_brain)  <- artif_sample_brain
+names(artif_muscle) <- artif_sample_muscle
+
+artifA <- sample(x = artif_brain, size = length(artif_brain))
+artifB <- sample(x = artif_muscle, size = length(artif_muscle))
+
+p_zero_Fast <- abs(length(which(artifA - artifB > 0))/length(artifA)-0.5)+0.5
+
+nrepBetas[[1]] <- median(artif_brain)
+nrepBetas[[2]] <- median(artif_muscle)
+nrepBetas[[3]] <- p_zero_Fast
+
+nrepBetas[[4]] <- artif_brain
+nrepBetas[[5]] <- artif_muscle
+
+names(nrepBetas) <- c("BrainMedianPsi", "MuscleMedianPsi", "Pdiff", "BrainPoints", "MusclePoints")
+return(nrepBetas)
+
+  
+}
+
+# Apply function to each row/event of the PSI table
+gtexBetas         <- lapply(1:nrow(filteredPsis), function(x) gtexNrepsBetas(row = x))
+names(gtexBetas)  <- rownames(filteredPsis)
+
+# Add beta-distribution-based approach metrics (median PSI per tissue, difference in PSI and probability of a difference) into summary table
+diffTable                     <- AllSE_BrainMuscle_Filtered
+diffTable$BrainMedianPsi      <- as.numeric(as.vector(lapply(1:length(gtexBetas), function(x) gtexBetas[[x]][[1]])))
+diffTable$MuscleMedianPsi     <- as.numeric(as.vector(lapply(1:length(gtexBetas), function(x) gtexBetas[[x]][[2]])))
+diffTable$deltaBrainToMuscle  <- diffTable$BrainMedianPsi - diffTable$MuscleMedianPsi
+diffTable$Pdiff               <- as.numeric(as.vector(lapply(1:length(gtexBetas), function(x) gtexBetas[[x]][[3]])))
+
+ggplot(data = diffTable,
+       aes(x = deltaBrainToMuscle,
+           y = Pdiff,
+           color = deltaPSI)) +
+  geom_point() +
+  scale_color_gradient2(name = expression(Delta*PSI),
+                        low = muscle_color,
+                        mid = "gray",
+                        high = brain_color) +
+  geom_point(data = diffTable[eventsOI,],
+             color = "black",
+             fill = NA,
+             stroke = 1,
+             shape = 21,
+             size = 3) +
+  # xlab(expression(abs(Delta*PSI[Brain-Muscle]))) +
+  xlab(expression(PSI[Brain]-PSI[Muscle])) +
+  ylab("Probability of differential splicing") +
+  labs(caption = paste0(nrow(filteredPsis), " exon skipping (SE) events")) +
+  theme(text = element_text(size = 20))
+
+```
+
+Inspect events of interest: outliers in the probability of differential splicing as a function of the delta PSI plot
+
+```{r Inspect events of interest}
+
+
+examples <- rownames(diffTable[which((diffTable$Pdiff<diffTable$deltaBrainToMuscle+0.5 | diffTable$Pdiff < -diffTable$deltaBrainToMuscle+0.5) &
+                              diffTable$Pdiff > 0.7 & diffTable$Pdiff < 1),])
+
+extreme_examples <- rownames(diffTable[which((diffTable$Pdiff < -diffTable$deltaBrainToMuscle+0.5) &
+                                               diffTable$Pdiff > 0.7 & diffTable$Pdiff < 0.9),])
+
+
+# Study the "outliers" of the volcano
+ggplot(data = diffTable,
+       aes(x = deltaBrainToMuscle,
+           y = Pdiff,
+           color = deltaPSI)) +
+  geom_point() +
+  geom_abline(intercept = c(0.5, 0.5),
+              slope = c(-1, 1)) +
+  scale_color_gradient2(name = expression(Delta*PSI),
+                        low = muscle_color,
+                        mid = "gray",
+                        high = brain_color) +
+  geom_point(data = diffTable[examples,],
+             color = "black",
+             fill = NA,
+             shape = 21) +
+  # xlab(expression(abs(Delta*PSI[Brain-Muscle]))) +
+  xlab(expression(PSI[Brain]-PSI[Muscle])) +
+  ylab("Probability of differential splicing") +
+  labs(caption = paste0(nrow(filteredPsis), " exon skipping (SE) events"))
+
+
+```
+
+Plot specific cases
+
+```{r}
+
+# Select a random event to plot from the subset of "events of interest" and "examples"
+i <- sample(which(rownames(filteredPsis) %in% c(eventsOI, extreme_examples)), size = 1)
+# ::::::::::::::::::::::::::
+
+volcanoInd <- ggplot(data = diffTable,
+                     aes(x = deltaBrainToMuscle,
+                         y = Pdiff,
+                         color = deltaPSI)) +
+  geom_point(show.legend = FALSE,
+             alpha = 0.5) +
+  scale_color_gradient2(name = expression(Delta*PSI),
+                        low = muscle_color,
+                        mid = "gray",
+                        high = brain_color) +
+  geom_point(data = diffTable[i,],
+             color = "black") +
+  xlab(expression(PSI[Brain]-PSI[Muscle])) +
+  ylab("Probability of differential splicing") +
+  labs(title = rownames(diffTable)[i])
+
+psistoPlot <- melt(filteredPsis[i,], value.name = "psi")
+
+psistoPlot$tissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (area of retrieval)`[match(psistoPlot$variable,
+                                                                                                     rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+psistoPlot$subtissue <- GTEx_BrainMuscle$GTEx$`Sample metadata`$`Tissue Type (detail)`[match(psistoPlot$variable,
+                                                                                             rownames(GTEx_BrainMuscle$GTEx$`Sample metadata`))]
+
+usedSamples <- c(unique(names(gtexBetas[[i]][[4]])), unique(names(gtexBetas[[i]][[5]])))
+sample      <- psistoPlot[match(usedSamples, psistoPlot$variable),]
+
+plotPsis <- ggplot(data = psistoPlot,
+                   aes(x = tissue,
+                       y = psi,
+                       group = tissue,
+                       color = tissue,
+                       fill = tissue)) +
+  geom_violin(show.legend = FALSE,
+              alpha = 0.5) +
+  geom_jitter(alpha = 0.2,
+              show.legend = FALSE) +
+  geom_jitter(data = sample,
+              color = "black",
+              fill = "black",
+              show.legend = FALSE) +
+  scale_fill_manual(values = c(brain_color, muscle_color)) +
+  scale_color_manual(values = c(brain_color, muscle_color)) +
+  xlab("tissue") +
+  ylab("PSI") +
+  theme(plot.title = element_text(size = 8),
+        axis.title.x = element_blank()) +
+  stat_compare_means(data = sample,
+                     method = "kruskal.test",
+                     label.y = 1,
+                     show.legend = FALSE)
+
+artif1 <- gtexBetas[[i]][[4]]
+artif2 <- gtexBetas[[i]][[5]]
+median1 <- gtexBetas[[i]][[1]]
+median2 <- gtexBetas[[i]][[2]]
+
+pbrain <- ggplot() +
+  geom_jitter(aes(x = factor(names(artif1)),
+                  y = as.numeric(as.vector(artif1))),
+              alpha = 0.2,
+              color = brain_color,
+              fill = brain_color) +
+  geom_hline(yintercept = median1,
+             color = brain_color) +
+  xlab("") +
+  scale_y_continuous(limits = c(0,1),
+                     breaks = seq(0,1,0.25)) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x.bottom = element_blank(),
+        axis.title.y = element_blank())
+
+pmuscle <- ggplot() +
+  geom_jitter(aes(x = factor(names(artif2)),
+                  y = as.numeric(as.vector(artif2))),
+              alpha = 0.2,
+              color = muscle_color,
+              fill = muscle_color) +
+  geom_hline(yintercept = median2,
+             color = muscle_color) +
+  xlab("") +
+  scale_y_continuous(limits = c(0,1),
+                     breaks = seq(0,1,0.25)) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x.bottom = element_blank(),
+        axis.title.y = element_blank())
+
+multiplotRow  <- plot_grid(plotPsis, pbrain, pmuscle, ncol = 3, align = "h")
+multiplot     <- plot_grid(volcanoInd, multiplotRow, nrow = 2)
+
+multiplot
+
+```
+
